@@ -441,6 +441,16 @@ export const CreateExamPage: React.FC = () => {
     }
   };
 
+  const handleGoBack = async () => {
+    if (hasUnsavedChanges && createdExamUuid) {
+      const confirmed = window.confirm('Você tem alterações não salvas. Deseja salvá-las antes de sair?');
+      if (confirmed) {
+        await handleSaveDraft();
+      }
+    }
+    navigate('/dashboard/exams');
+  };
+
   const handleCancel = () => {
     setShowDeleteConfirm(true);
   };
@@ -795,14 +805,24 @@ export const CreateExamPage: React.FC = () => {
       {/* Footer Fixo */}
       <footer className="fixed bottom-0 left-0 right-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 p-4 z-50">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <button
-            onClick={handleCancel}
-            className="flex items-center gap-2 text-sm font-bold text-slate-500 hover:text-slate-800 dark:hover:text-white transition-colors"
-            disabled={isLoading}
-          >
-            <span className="material-symbols-outlined text-lg">close</span>
-            Cancelar e Sair
-          </button>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={handleGoBack}
+              className="flex items-center gap-2 text-sm font-bold text-slate-500 hover:text-slate-800 dark:hover:text-white transition-colors"
+              disabled={isLoading}
+            >
+              <span className="material-symbols-outlined text-lg">arrow_back</span>
+              Voltar
+            </button>
+            <button
+              onClick={handleCancel}
+              className="flex items-center gap-2 text-sm font-bold text-red-400 hover:text-red-600 transition-colors"
+              disabled={isLoading}
+            >
+              <span className="material-symbols-outlined text-lg">delete</span>
+              Excluir rascunho
+            </button>
+          </div>
 
           <div className="flex items-center gap-4">
             {hasUnsavedChanges && (
