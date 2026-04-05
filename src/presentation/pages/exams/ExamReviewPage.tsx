@@ -1,12 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { DashboardLayout } from '@presentation/components/layout/DashboardLayout';
 import { reviewService } from '@infrastructure/api/reviewService';
-import type { StudentAnswerReview } from '@domain/types/review';
-// 🔥 TESTE: Verificar se imports estão funcionando
-console.log('📦 reviewService importado:', reviewService);
-console.log('📦 reviewService.getExamReview existe?', typeof reviewService.getExamReview === 'function');
+import type { StudentAnswerReview, CriterionScore, RagContextItem, AgentCriteriaScores } from '@domain/types/review';
 
 // Configuração de status das respostas
 const answerStatusConfig: Record<string, { label: string; className: string }> = {
@@ -16,36 +13,120 @@ const answerStatusConfig: Record<string, { label: string; className: string }> =
   INVALID: { label: 'Inválida', className: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
 };
 
+// ========== Componentes locais ==========
+
+interface CriteriaTabPanelProps {
+  criteria: CriterionScore[];
+  score?: number;
+  maxScore: number;
+}
+
+const CriteriaTabPanel: React.FC<CriteriaTabPanelProps> = ({ criteria, score: _score, maxScore: _maxScore }) => (
+  <div className="space-y-3">
+    {criteria.map((criterion) => {
+      const percentage = (criterion.raw_score / criterion.max_score) * 100;
+      return (
+        <div
+          key={criterion.criterion_uuid}
+          className="bg-white dark:bg-slate-800 p-4 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm"
+        >
+          <div className="flex justify-between items-center mb-2">
+            <span className="font-semibold text-sm text-slate-900 dark:text-white">
+              {criterion.criterion_name}
+            </span>
+            <span className="text-sm font-bold text-primary">
+              {criterion.raw_score.toFixed(1)}
+              <span className="text-slate-400 font-normal">/{criterion.max_score.toFixed(1)}</span>
+            </span>
+          </div>
+          <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full mb-2">
+            <div
+              className="bg-primary h-full rounded-full transition-all"
+              style={{ width: `${percentage}%` }}
+            />
+          </div>
+          <div className="flex justify-between text-xs text-slate-500">
+            <span>Peso: {criterion.weight.toFixed(1)}%</span>
+            <span>{percentage.toFixed(0)}%</span>
+          </div>
+          {criterion.feedback && (
+            <div className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-600">
+              <p className="text-xs text-slate-600 dark:text-slate-400">{criterion.feedback}</p>
+            </div>
+          )}
+        </div>
+      );
+    })}
+  </div>
+);
+
+interface RagContextSectionProps {
+  contexts: RagContextItem[];
+}
+
+const RagContextSection: React.FC<RagContextSectionProps> = ({ contexts }) => (
+  <details className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-600">
+    <summary className="flex items-center gap-2 cursor-pointer list-none text-xs font-semibold text-slate-500 uppercase">
+      <span className="material-symbols-outlined text-sm text-slate-400">travel_explore</span>
+      Contexto RAG utilizado na correção
+      <span className="material-symbols-outlined text-xs">expand_more</span>
+    </summary>
+    <div className="mt-3 space-y-3">
+      {contexts.map((ctx, idx) => (
+        <div
+          key={ctx.chunk_index ?? idx}
+          className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-lg p-3"
+        >
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-slate-500">
+              Trecho {idx + 1}
+              {ctx.source_document && (
+                <span className="ml-1 text-slate-400">
+                  — {ctx.source_document}
+                  {ctx.page_number != null && ` p.${ctx.page_number}`}
+                </span>
+              )}
+            </span>
+            {ctx.relevance_score != null && (
+              <span className="text-xs font-semibold text-emerald-600">
+                {(ctx.relevance_score * 100).toFixed(0)}% relevância
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed line-clamp-4">
+            {ctx.content}
+          </p>
+        </div>
+      ))}
+    </div>
+  </details>
+);
+
+// ========== Página principal ==========
+
 export const ExamReviewPage: React.FC = () => {
   const { examUuid } = useParams<{ examUuid: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  
-  // 🔥 DEBUG: Log inicial
-  console.log('🚀 ExamReviewPage MONTADO - examUuid:', examUuid);
-  console.log('🚀 ExamReviewPage MONTADO - timestamp:', new Date().toISOString());
-  
+
   const [activeQuestionIndex, setActiveQuestionIndex] = useState(0);
   const [activeStudentIndex, setActiveStudentIndex] = useState(0);
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [newScore, setNewScore] = useState<number>(0);
   const [newFeedback, setNewFeedback] = useState<string>('');
-  
-  console.log('📍 Estado atual:', { activeQuestionIndex, activeStudentIndex, showAdjustModal });
+  const [activeTab, setActiveTab] = useState<
+    'consensus' | 'corretor_1' | 'corretor_2' | 'corretor_3_arbiter'
+  >('consensus');
+
+  // Reset aba para consenso ao navegar entre questões/alunos
+  useEffect(() => {
+    setActiveTab('consensus');
+  }, [activeQuestionIndex, activeStudentIndex]);
 
   // Buscar dados da revisão
   const { data: reviewData, isLoading, error } = useQuery({
     queryKey: ['exam-review', examUuid],
-    queryFn: async () => {
-      console.log('🔍 Buscando review para exam:', examUuid);
-      const data = await reviewService.getExamReview(examUuid!);
-      console.log('✅ Review data recebida:', data);
-      console.log('📊 Total de questões:', data.questions.length);
-      data.questions.forEach((q, idx) => {
-        console.log(`   Questão ${idx + 1}:`, q.student_answers.length, 'respostas');
-      });
-      return data;
-    },
+    queryFn: () => reviewService.getExamReview(examUuid!),
     enabled: !!examUuid,
   });
 
@@ -70,13 +151,9 @@ export const ExamReviewPage: React.FC = () => {
   const finalizeReviewMutation = useMutation({
     mutationFn: reviewService.finalizeReview,
     onSuccess: () => {
-      console.log('✅ Revisão finalizada com sucesso');
-      // Navegar para a página de detalhes da prova
-      // O relatório pode ser baixado de lá através do botão "Baixar Relatório"
       navigate(`/dashboard/exams/${examUuid}`);
     },
   });
-
 
   const handleOpenAdjustModal = (answer: StudentAnswerReview) => {
     setNewScore(answer.score || 0);
@@ -86,7 +163,6 @@ export const ExamReviewPage: React.FC = () => {
 
   const handleAdjustGrade = () => {
     if (!currentAnswer) return;
-    console.log('📝 Ajustar nota clicado:', { answer_uuid: currentAnswer.answer_uuid, newScore, newFeedback });
     adjustGradeMutation.mutate({
       answer_uuid: currentAnswer.answer_uuid,
       new_score: newScore,
@@ -96,33 +172,25 @@ export const ExamReviewPage: React.FC = () => {
 
   const handleApproveAnswer = () => {
     if (!currentAnswer) return;
-    console.log('✅ Aprovar resposta clicado:', currentAnswer.answer_uuid);
     const confirmed = window.confirm(
       `Tem certeza que deseja aprovar a resposta de ${currentAnswer.student_name}? A nota será marcada como finalizada.`
     );
     if (confirmed) {
-      console.log('✅ Confirmado - aprovando resposta');
       approveAnswerMutation.mutate(currentAnswer.answer_uuid);
-    } else {
-      console.log('❌ Cancelado pelo usuário');
     }
   };
 
   const handleFinalizeReview = () => {
     if (!examUuid) return;
-    console.log('🏁 Finalizar revisão clicado:', examUuid);
     const confirmed = window.confirm(
       'Deseja finalizar a revisão? Isso gerará o relatório e notificará os alunos.'
     );
     if (confirmed) {
-      console.log('✅ Confirmado - finalizando revisão');
       finalizeReviewMutation.mutate({
         exam_uuid: examUuid,
         send_notifications: true,
         generate_pdf: true,
       });
-    } else {
-      console.log('❌ Cancelado pelo usuário');
     }
   };
 
@@ -164,23 +232,6 @@ export const ExamReviewPage: React.FC = () => {
 
   const currentQuestion = reviewData.questions[activeQuestionIndex];
   const currentAnswer = currentQuestion?.student_answers[activeStudentIndex];
-  
-  console.log('🎯 Dados atuais:', {
-    totalQuestions: reviewData.questions.length,
-    activeQuestionIndex,
-    currentQuestion: currentQuestion ? {
-      uuid: currentQuestion.question_uuid,
-      number: currentQuestion.question_number,
-      totalAnswers: currentQuestion.student_answers.length
-    } : null,
-    activeStudentIndex,
-    currentAnswer: currentAnswer ? {
-      uuid: currentAnswer.answer_uuid,
-      studentName: currentAnswer.student_name,
-      totalSuggestions: currentAnswer.ai_suggestions?.length || 0,
-      totalCriteria: currentAnswer.criteria_scores.length
-    } : null
-  });
 
   if (!currentQuestion || !currentAnswer) {
     return (
@@ -192,24 +243,35 @@ export const ExamReviewPage: React.FC = () => {
     );
   }
 
-  const calculateTotalScore = () => {
-    // Usa weighted_score quando disponível (raw_score × peso decimal).
-    // Fallback: recalcula manualmente com o peso percentual do critério.
-    return currentAnswer.criteria_scores.reduce((sum, c) => {
-      const contribution =
-        c.weighted_score !== undefined && c.weighted_score !== null
-          ? c.weighted_score
-          : c.raw_score * (c.weight / 100);
-      return sum + contribution;
-    }, 0);
-  };
-
   const getAnswerStatusInfo = (status: string) => {
     return answerStatusConfig[status] || {
       label: status,
       className: 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-400',
     };
   };
+
+  // Helpers de abas
+  const getTabCriteria = (): CriterionScore[] => {
+    if (activeTab === 'consensus') return currentAnswer.criteria_scores;
+    const agentData = currentAnswer.agent_criteria_scores?.find(
+      (a: AgentCriteriaScores) => a.agent_id === activeTab
+    );
+    return agentData?.criteria_scores ?? [];
+  };
+
+  const getTabScore = (): number | undefined => {
+    if (activeTab === 'consensus') return currentAnswer.score;
+    if (activeTab === 'corretor_1') return currentAnswer.c1_score;
+    if (activeTab === 'corretor_2') return currentAnswer.c2_score;
+    if (activeTab === 'corretor_3_arbiter') return currentAnswer.arbiter_score;
+    return undefined;
+  };
+
+  const isTabAvailable = (tabId: 'corretor_1' | 'corretor_2' | 'corretor_3_arbiter'): boolean => {
+    return currentAnswer.agent_criteria_scores?.some((a: AgentCriteriaScores) => a.agent_id === tabId) ?? false;
+  };
+
+  const hasDivergence = currentAnswer.divergence_detected === true;
 
   return (
     <DashboardLayout>
@@ -350,6 +412,9 @@ export const ExamReviewPage: React.FC = () => {
                   </p>
                 </div>
               )}
+              {currentQuestion.rag_contexts && currentQuestion.rag_contexts.length > 0 && (
+                <RagContextSection contexts={currentQuestion.rag_contexts} />
+              )}
             </details>
 
             {/* Resposta do Aluno */}
@@ -380,43 +445,101 @@ export const ExamReviewPage: React.FC = () => {
 
         {/* Coluna Direita - Análise */}
         <aside className="w-[480px] bg-slate-50 dark:bg-slate-900 flex flex-col border-l border-slate-200 dark:border-slate-700 overflow-y-auto">
-          <div className="p-6 space-y-6">
-            
-            {/* Rubrica Dinâmica */}
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">Rubrica Dinâmica</h4>
-                <span className="text-xs font-semibold text-primary bg-primary/10 px-2 py-0.5 rounded">
+          <div className="p-6 space-y-4">
+
+            {/* Abas de corretores */}
+            <div>
+              <div className="flex items-center gap-1 border-b border-slate-200 dark:border-slate-700 mb-4">
+                {/* Aba Consenso */}
+                <button
+                  onClick={() => setActiveTab('consensus')}
+                  className={`relative px-3 py-2 text-xs font-semibold border-b-2 transition-colors ${
+                    activeTab === 'consensus'
+                      ? 'border-primary text-primary'
+                      : 'border-transparent text-slate-500 hover:text-primary'
+                  }`}
+                >
+                  Consenso
+                </button>
+
+                {/* Aba C1 */}
+                <button
+                  onClick={() => isTabAvailable('corretor_1') && setActiveTab('corretor_1')}
+                  disabled={!isTabAvailable('corretor_1')}
+                  className={`relative px-3 py-2 text-xs font-semibold border-b-2 transition-colors ${
+                    activeTab === 'corretor_1'
+                      ? 'border-primary text-primary'
+                      : 'border-transparent text-slate-500 hover:text-primary'
+                  } ${!isTabAvailable('corretor_1') ? 'opacity-40 cursor-not-allowed' : ''}`}
+                >
+                  C1
+                  {hasDivergence && isTabAvailable('corretor_1') && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full" />
+                  )}
+                </button>
+
+                {/* Aba C2 */}
+                <button
+                  onClick={() => isTabAvailable('corretor_2') && setActiveTab('corretor_2')}
+                  disabled={!isTabAvailable('corretor_2')}
+                  className={`relative px-3 py-2 text-xs font-semibold border-b-2 transition-colors ${
+                    activeTab === 'corretor_2'
+                      ? 'border-primary text-primary'
+                      : 'border-transparent text-slate-500 hover:text-primary'
+                  } ${!isTabAvailable('corretor_2') ? 'opacity-40 cursor-not-allowed' : ''}`}
+                >
+                  C2
+                  {hasDivergence && isTabAvailable('corretor_2') && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full" />
+                  )}
+                </button>
+
+                {/* Aba Árbitro */}
+                <button
+                  onClick={() => isTabAvailable('corretor_3_arbiter') && setActiveTab('corretor_3_arbiter')}
+                  disabled={!isTabAvailable('corretor_3_arbiter')}
+                  className={`relative px-3 py-2 text-xs font-semibold border-b-2 transition-colors ${
+                    activeTab === 'corretor_3_arbiter'
+                      ? 'border-primary text-primary'
+                      : 'border-transparent text-slate-500 hover:text-primary'
+                  } ${!isTabAvailable('corretor_3_arbiter') ? 'opacity-40 cursor-not-allowed' : ''}`}
+                >
+                  Árbitro
+                  {hasDivergence && isTabAvailable('corretor_3_arbiter') && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full" />
+                  )}
+                </button>
+
+                <span className="ml-auto text-xs font-semibold text-primary bg-primary/10 px-2 py-0.5 rounded">
                   CORREÇÃO AUTOMÁTICA
                 </span>
               </div>
 
-              {currentAnswer.criteria_scores.map((criterion) => {
-                const percentage = (criterion.raw_score / criterion.max_score) * 100;
-                return (
-                  <div key={criterion.criterion_uuid} className="bg-white dark:bg-slate-800 p-4 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="font-semibold text-sm text-slate-900 dark:text-white">{criterion.criterion_name}</span>
-                      <span className="text-sm font-bold text-primary">
-                        {criterion.raw_score.toFixed(1)}
-                        <span className="text-slate-400 font-normal">/{criterion.max_score.toFixed(1)}</span>
-                      </span>
-                    </div>
-                    <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full mb-2">
-                      <div className="bg-primary h-full rounded-full transition-all" style={{ width: `${percentage}%` }}></div>
-                    </div>
-                    <div className="flex justify-between text-xs text-slate-500">
-                      <span>Peso: {criterion.weight.toFixed(1)}%</span>
-                      <span>{percentage.toFixed(0)}%</span>
-                    </div>
-                    {criterion.feedback && (
-                      <div className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-600">
-                        <p className="text-xs text-slate-600 dark:text-slate-400">{criterion.feedback}</p>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              {/* Método de consenso */}
+              {activeTab === 'consensus' && currentAnswer.consensus_method && (
+                <div className="flex items-center gap-2 mb-3 text-xs text-slate-500">
+                  <span className="material-symbols-outlined text-sm">merge</span>
+                  Método: {currentAnswer.consensus_method}
+                </div>
+              )}
+
+              {/* Indicador de divergência */}
+              {hasDivergence && activeTab === 'consensus' && (
+                <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-600 dark:text-red-400">
+                  <span className="material-symbols-outlined text-sm">warning</span>
+                  Divergência detectada entre corretores
+                  {currentAnswer.divergence_value != null && (
+                    <span className="ml-auto font-semibold">Δ {currentAnswer.divergence_value.toFixed(2)}</span>
+                  )}
+                </div>
+              )}
+
+              {/* Critérios da aba ativa */}
+              <CriteriaTabPanel
+                criteria={getTabCriteria()}
+                score={getTabScore()}
+                maxScore={currentQuestion.max_score}
+              />
             </div>
           </div>
 
@@ -429,7 +552,7 @@ export const ExamReviewPage: React.FC = () => {
               </div>
               <div className="text-right">
                 <span className="text-3xl font-bold text-primary">
-                  {currentAnswer.score?.toFixed(1) || calculateTotalScore().toFixed(1)}
+                  {getTabScore() != null ? getTabScore()!.toFixed(1) : '—'}
                 </span>
                 <span className="text-lg text-slate-400 font-semibold">/{currentQuestion.max_score.toFixed(1)}</span>
               </div>
