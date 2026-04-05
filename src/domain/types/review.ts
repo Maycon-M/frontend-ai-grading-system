@@ -15,6 +15,23 @@ export interface CriterionScore {
   feedback?: string;
 }
 
+// ========== Contextos RAG ==========
+
+export interface RagContextItem {
+  content: string;
+  source_document?: string;
+  page_number?: number;
+  relevance_score?: number;
+  chunk_index?: number;
+}
+
+// ========== Scores por Corrector ==========
+
+export interface AgentCriteriaScores {
+  agent_id: 'corretor_1' | 'corretor_2' | 'corretor_3_arbiter' | 'consensus';
+  criteria_scores: CriterionScore[];
+}
+
 // ========== Sugestões da IA ==========
 
 export type SuggestionType = 'feedback' | 'score_adjustment';
@@ -42,6 +59,14 @@ export interface StudentAnswerReview {
   criteria_scores: CriterionScore[];
   ai_suggestions?: AISuggestion[]; // Opcional - funcionalidade descontinuada
   graded_at?: string;
+  // Campos de corretores individuais (migration 0011)
+  c1_score?: number;
+  c2_score?: number;
+  arbiter_score?: number;
+  divergence_detected?: boolean;
+  divergence_value?: number;
+  consensus_method?: string;
+  agent_criteria_scores?: AgentCriteriaScores[];
 }
 
 // ========== Questão com Respostas ==========
@@ -53,6 +78,7 @@ export interface QuestionReview {
   expected_answer?: string;
   max_score: number;
   student_answers: StudentAnswerReview[];
+  rag_contexts?: RagContextItem[]; // migration 0012
 }
 
 // ========== Resposta Completa de Revisão ==========
